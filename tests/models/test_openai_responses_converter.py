@@ -35,11 +35,13 @@ from agents import (
     Agent,
     AgentOutputSchema,
     ApplyPatchTool,
+    CodeInterpreterTool,
     Computer,
     ComputerTool,
     FileSearchTool,
     Handoff,
     HostedMCPTool,
+    ImageGenerationTool,
     ShellTool,
     Tool,
     ToolSearchTool,
@@ -101,9 +103,16 @@ def test_convert_tool_choice_standard_values():
     assert Converter.convert_tool_choice("auto") == "auto"
     assert Converter.convert_tool_choice("required") == "required"
     assert Converter.convert_tool_choice("none") == "none"
-    # Special tool types are represented as dicts of type only.
-    assert Converter.convert_tool_choice("file_search") == {"type": "file_search"}
-    assert Converter.convert_tool_choice("web_search_preview") == {"type": "web_search_preview"}
+    # Without a matching built-in tool configured, a built-in-looking string
+    # targets a function tool by name instead of the hosted tool (issue #5472).
+    assert Converter.convert_tool_choice("file_search") == {
+        "type": "function",
+        "name": "file_search",
+    }
+    assert Converter.convert_tool_choice("web_search_preview") == {
+        "type": "function",
+        "name": "web_search_preview",
+    }
     # Arbitrary string should be interpreted as a function name.
     assert Converter.convert_tool_choice("my_function") == {
         "type": "function",
@@ -178,6 +187,65 @@ def test_convert_tool_choice_builtin_shell_and_apply_patch() -> None:
     assert Converter.convert_tool_choice("apply_patch", tools=[apply_patch_tool]) == {
         "type": "apply_patch"
     }
+
+
+def test_convert_tool_choice_allows_function_named_like_builtin_tools() -> None:
+    """A function tool sharing a built-in tool's name must stay targetable by name
+    when no matching built-in tool is configured (issue #5472)."""
+    for builtin_name in (
+        "file_search",
+        "web_search",
+        "web_search_preview",
+        "computer_use_preview",
+        "image_generation",
+        "code_interpreter",
+        "mcp",
+    ):
+        function_with_builtin_name = function_tool(lambda: "ok", name_override=builtin_name)
+        assert Converter.convert_tool_choice(builtin_name, tools=[function_with_builtin_name]) == {
+            "type": "function",
+            "name": builtin_name,
+        }
+
+
+def test_convert_tool_choice_builtin_hosted_tools_still_selectable_when_configured() -> None:
+    """The built-in selectors must keep working when the matching tool is present."""
+    assert Converter.convert_tool_choice(
+        "file_search", tools=[FileSearchTool(vector_store_ids=["vs_123"])]
+    ) == {"type": "file_search"}
+    assert Converter.convert_tool_choice("web_search", tools=[WebSearchTool()]) == {
+        "type": "web_search"
+    }
+    assert Converter.convert_tool_choice("web_search_preview", tools=[WebSearchTool()]) == {
+        "type": "web_search_preview"
+    }
+    assert Converter.convert_tool_choice(
+        "image_generation",
+        tools=[ImageGenerationTool(tool_config=cast(Any, {"type": "image_generation"}))],
+    ) == {"type": "image_generation"}
+    assert Converter.convert_tool_choice(
+        "code_interpreter",
+        tools=[
+            CodeInterpreterTool(
+                tool_config=cast(Any, {"type": "code_interpreter", "container": "auto"})
+            )
+        ],
+    ) == {"type": "code_interpreter"}
+    assert Converter.convert_tool_choice(
+        "mcp",
+        tools=[
+            HostedMCPTool(
+                tool_config=cast(
+                    Any,
+                    {
+                        "type": "mcp",
+                        "server_label": "deepwiki",
+                        "server_url": "https://deepwiki.com/mcp",
+                    },
+                )
+            )
+        ],
+    ) == {"type": "mcp"}
 
 
 def test_convert_tool_choice_allows_function_named_tool_search() -> None:
